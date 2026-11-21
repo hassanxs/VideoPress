@@ -7,7 +7,7 @@
 #define AppName        "VideoPress"
 ; CI passes /DAppVersion=x.y.z from the git tag; this is the local fallback.
 #ifndef AppVersion
-  #define AppVersion   "1.0.3"
+  #define AppVersion   "1.0.4"
 #endif
 #define AppPublisher   "VideoPress"
 #define AppURL         "https://github.com/hassanxs/VideoPress"
