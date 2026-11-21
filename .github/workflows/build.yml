@@ -1,0 +1,112 @@
+name: Build
+
+# Every push / PR: compile + publish (catches build errors).
+# Tag "v1.2.3": also builds the installer and attaches it to a GitHub Release.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create releases on tag builds
+
+env:
+  # Pinned FFmpeg: BtbN stable 9.0 branch (bug-fix updates only), not "master".
+  FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-gpl-9.0.zip
+  MEDIAINFO_URL: https://mediaarea.net/download/binary/mediainfo/24.11/MediaInfo_CLI_24.11_Windows_x64.zip
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Work out version
+        id: ver
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $v = "${{ github.ref_name }}".TrimStart('v')
+          } else {
+            $base = ([xml](Get-Content VideoPress.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+            $v = "$base"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $v"
+
+      - name: Cache FFmpeg + MediaInfo
+        id: cache-bins
+        uses: actions/cache@v4
+        with:
+          path: |
+            Assets/ffmpeg
+            Assets/mediainfo
+          key: bins-${{ hashFiles('.github/workflows/build.yml') }}
+
+      - name: Fetch FFmpeg
+        if: hashFiles('Assets/ffmpeg/ffmpeg.exe') == ''
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force Assets/ffmpeg | Out-Null
+          Invoke-WebRequest $env:FFMPEG_URL -OutFile "$env:RUNNER_TEMP/ffmpeg.zip"
+          Expand-Archive "$env:RUNNER_TEMP/ffmpeg.zip" "$env:RUNNER_TEMP/ffmpeg" -Force
+          Get-ChildItem "$env:RUNNER_TEMP/ffmpeg" -Recurse -Include ffmpeg.exe,ffprobe.exe |
+            Copy-Item -Destination Assets/ffmpeg/
+          & Assets/ffmpeg/ffmpeg.exe -version | Select-Object -First 1
+
+      - name: Fetch MediaInfo
+        if: hashFiles('Assets/mediainfo/MediaInfo.exe') == ''
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force Assets/mediainfo | Out-Null
+          Invoke-WebRequest $env:MEDIAINFO_URL -OutFile "$env:RUNNER_TEMP/mediainfo.zip"
+          Expand-Archive "$env:RUNNER_TEMP/mediainfo.zip" "$env:RUNNER_TEMP/mediainfo" -Force
+          Get-ChildItem "$env:RUNNER_TEMP/mediainfo" -Recurse -Filter MediaInfo.exe |
+            Select-Object -First 1 | Copy-Item -Destination Assets/mediainfo/MediaInfo.exe
+
+      - name: Publish app
+        run: >
+          dotnet publish VideoPress.csproj -c Release -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:Version=${{ steps.ver.outputs.version }}
+          -o ./publish/VideoPress
+
+      - name: Install Inno Setup
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+
+      - name: Build installer
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" installer\VideoPress.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoPress-Setup-${{ steps.ver.outputs.version }}
+          path: dist/VideoPress-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}" dist/VideoPress-Setup-*.exe
+          --title "VideoPress ${{ steps.ver.outputs.version }}"
+          --generate-notes

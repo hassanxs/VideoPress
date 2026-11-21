@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>VideoPress</AssemblyName>
+    <RootNamespace>VideoPress</RootNamespace>
+    <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <Version>1.0.3</Version>
+    <Authors>VideoPress</Authors>
+    <Description>Professional Video Compression Studio</Description>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+    <PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.135" />
+  </ItemGroup>
+
+  <!--
+    Run fetch-mediainfo.bat ONCE before building to download MediaInfo.exe
+    into Assets\mediainfo\. After that, every build and publish bundles it.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\mediainfo\MediaInfo.exe"
+                      LogicalName="VideoPress.Assets.MediaInfo.exe"
+                      Condition="Exists('Assets\mediainfo\MediaInfo.exe')"/>
+  </ItemGroup>
+
+  <!-- Icon and other WPF resources -->
+  <ItemGroup>
+    <Resource Include="Assets\icon.ico"/>
+  </ItemGroup>
+
+  <!--
+    FFmpeg binaries embedded directly into the assembly.
+    Run fetch-ffmpeg.bat ONCE before building to download ffmpeg.exe + ffprobe.exe
+    into Assets\ffmpeg\. After that, every build and publish is fully self-contained.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\pk_flag.png"/>
+    <EmbeddedResource Include="Assets\ffmpeg\ffmpeg.exe"
+                      LogicalName="VideoPress.Assets.ffmpeg.exe"
+                      Condition="Exists('Assets\ffmpeg\ffmpeg.exe')"/>
+    <EmbeddedResource Include="Assets\ffmpeg\ffprobe.exe"
+                      LogicalName="VideoPress.Assets.ffprobe.exe"
+                      Condition="Exists('Assets\ffmpeg\ffprobe.exe')"/>
+
+  </ItemGroup>
+
+</Project>
