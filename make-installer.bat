@@ -62,7 +62,7 @@ echo.
 echo [3/3] Done!
 echo.
 echo ============================================================
-echo  OUTPUT: dist\VideoPress-Setup-1.0.4.exe
+echo  OUTPUT: dist\VideoPress-Setup-1.0.5.exe
 echo ============================================================
 echo.
 echo The installer:
