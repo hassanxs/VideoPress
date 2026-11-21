@@ -422,12 +422,9 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanCompress))]
     public async Task CompressAllAsync()
     {
-        if (string.IsNullOrWhiteSpace(OutputFolder))
-        {
-            var first = Files.FirstOrDefault(f => f.Status == FileStatus.Waiting);
-            if (first != null)
-                OutputFolder = Path.GetDirectoryName(first.FullPath) ?? "";
-        }
+        // Blank OutputFolder means "next to each source file" — CompressFileAsync
+        // resolves that per file. (It must not be overwritten here, or every later
+        // batch would land in the first batch's folder.)
 
         _cts = new CancellationTokenSource();
         IsRunning = true;
@@ -435,32 +432,51 @@ public partial class MainViewModel : ObservableObject
         CompressAllCommand.NotifyCanExecuteChanged();
 
         var waiting = Files.Where(f => f.Status == FileStatus.Waiting).ToList();
-        int done = 0;
+        int processed = 0, succeeded = 0, failed = 0;
+        VideoFile? firstDone = null;
+        bool cancelled = false;
 
         foreach (var file in waiting)
         {
-            if (_cts.Token.IsCancellationRequested) break;
+            if (_cts.Token.IsCancellationRequested) { cancelled = true; break; }
             await CompressFileAsync(file, _cts.Token);
-            done++;
-            OverallProgress = (double)done / waiting.Count * 100.0;
+            processed++;
+
+            switch (file.Status)
+            {
+                case FileStatus.Done:
+                    succeeded++;
+                    firstDone ??= file;
+                    break;
+                case FileStatus.Error:
+                    failed++;
+                    break;
+                case FileStatus.Cancelled:
+                    cancelled = true;
+                    break;
+            }
+
+            OverallProgress = (double)processed / waiting.Count * 100.0;
+            if (cancelled) break;
         }
 
         IsRunning = false;
         _cts      = null;
-        OverallStatus   = done > 0
-            ? $"Completed — {done} file{(done != 1 ? "s" : "")} compressed."
-            : "Cancelled.";
-        OverallProgress = done > 0 ? 100 : 0;
+
+        var parts = new List<string>();
+        if (succeeded > 0) parts.Add($"{succeeded} file{(succeeded != 1 ? "s" : "")} compressed");
+        if (failed    > 0) parts.Add($"{failed} failed");
+        var summary = parts.Count > 0 ? string.Join(", ", parts) : "nothing compressed";
+        OverallStatus = cancelled
+            ? $"Cancelled — {summary}."
+            : failed > 0 ? $"Finished with errors — {summary}. Check the log."
+                         : $"Completed — {summary}.";
+        OverallProgress = cancelled ? OverallProgress : 100;
         CompressAllCommand.NotifyCanExecuteChanged();
 
-        if (AutoOpenOutput && done > 0)
-        {
-            var outFile = Files.FirstOrDefault(
-                f => f.Status == FileStatus.Done && !string.IsNullOrEmpty(f.OutputPath));
-            if (outFile != null)
-                System.Diagnostics.Process.Start("explorer.exe",
-                    $"/select,\"{outFile.OutputPath}\"");
-        }
+        if (AutoOpenOutput && firstDone != null && File.Exists(firstDone.OutputPath))
+            System.Diagnostics.Process.Start("explorer.exe",
+                $"/select,\"{firstDone.OutputPath}\"");
     }
 
     [RelayCommand]
@@ -646,39 +662,52 @@ public partial class MainViewModel : ObservableObject
                     LogText = (LogText.Length > 60_000 ? "" : LogText) + line + "\n");
             }
 
-            _ffmpeg.Progress += OnProgress;
-            _ffmpeg.LogLine  += OnLog;
+            // Subtitle codecs decide which subtitle streams the output can keep.
+            settings.SourceSubtitleCodecs = await _ffmpeg.GetSubtitleCodecsAsync(file.FullPath);
 
             bool success;
-            if (settings.QualityMode == QualityMode.TargetSize)
+            _ffmpeg.Progress += OnProgress;
+            _ffmpeg.LogLine  += OnLog;
+            try
             {
-                file.StatusText = "Pass 1 / 2…";
-                var args1 = settings.BuildFFmpegArgs(file.FullPath, outPath,
-                                secondPass: false, durationSecs: duration.TotalSeconds);
-                var ok1 = await _ffmpeg.RunAsync(args1, duration, ct);
+                if (settings.UsesTwoPass)
+                {
+                    // Pass stats go to a unique temp prefix, never the working folder.
+                    settings.PassLogFile = Path.Combine(Path.GetTempPath(), $"vp_pass_{Guid.NewGuid():N}");
 
+                    file.StatusText = "Pass 1 / 2…";
+                    var args1 = settings.BuildFFmpegArgs(file.FullPath, outPath,
+                                    secondPass: false, durationSecs: duration.TotalSeconds);
+                    var ok1 = await _ffmpeg.RunAsync(args1, duration, ct);
+
+                    if (!ok1 || ct.IsCancellationRequested)
+                    {
+                        Cleanup(outPath, file, ct.IsCancellationRequested);
+                        if (!ok1 && !ct.IsCancellationRequested)
+                            file.ErrorMessage = "FFmpeg pass 1 failed. Check the log.";
+                        return;
+                    }
+
+                    file.StatusText = "Pass 2 / 2…";
+                    var args2 = settings.BuildFFmpegArgs(file.FullPath, outPath,
+                                    secondPass: true, durationSecs: duration.TotalSeconds);
+                    success = await _ffmpeg.RunAsync(args2, duration, ct);
+                }
+                else
+                {
+                    var args = settings.BuildFFmpegArgs(file.FullPath, outPath,
+                                    secondPass: true, durationSecs: duration.TotalSeconds);
+                    success  = await _ffmpeg.RunAsync(args, duration, ct);
+                }
+            }
+            finally
+            {
+                // Always detach, or a thrown run would keep updating this card
+                // while the next file encodes.
                 _ffmpeg.Progress -= OnProgress;
                 _ffmpeg.LogLine  -= OnLog;
-
-                if (!ok1 || ct.IsCancellationRequested)
-                { Cleanup(outPath, file, ct.IsCancellationRequested); return; }
-
-                _ffmpeg.Progress += OnProgress;
-                _ffmpeg.LogLine  += OnLog;
-
-                file.StatusText = "Pass 2 / 2…";
-                var args2 = settings.BuildFFmpegArgs(file.FullPath, outPath,
-                                secondPass: true, durationSecs: duration.TotalSeconds);
-                success = await _ffmpeg.RunAsync(args2, duration, ct);
+                DeletePassLogs(settings.PassLogFile);
             }
-            else
-            {
-                var args = settings.BuildFFmpegArgs(file.FullPath, outPath);
-                success  = await _ffmpeg.RunAsync(args, duration, ct);
-            }
-
-            _ffmpeg.Progress -= OnProgress;
-            _ffmpeg.LogLine  -= OnLog;
 
             if (ct.IsCancellationRequested) { Cleanup(outPath, file, true); return; }
 
@@ -729,6 +758,19 @@ public partial class MainViewModel : ObservableObject
             System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
                 LogText += $"\n[ERROR] {ex.Message}\n");
         }
+    }
+
+    private static void DeletePassLogs(string? prefix)
+    {
+        if (string.IsNullOrEmpty(prefix)) return;
+        try
+        {
+            var dir  = Path.GetDirectoryName(prefix)!;
+            var name = Path.GetFileName(prefix);
+            foreach (var f in Directory.GetFiles(dir, name + "*"))
+                try { File.Delete(f); } catch { }
+        }
+        catch { }
     }
 
     private static void Cleanup(string? path, VideoFile file, bool cancelled)

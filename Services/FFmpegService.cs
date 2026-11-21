@@ -134,6 +134,39 @@ public class FFmpegService
             : TimeSpan.Zero;
     }
 
+    // ── Subtitle probe ───────────────────────────────────────────────────────
+
+    /// <summary>Codec names of the file's subtitle streams, in stream order.</summary>
+    public async Task<IReadOnlyList<string>> GetSubtitleCodecsAsync(string filePath)
+    {
+        if (!File.Exists(FFprobePath)) return Array.Empty<string>();
+
+        var psi = new ProcessStartInfo(FFprobePath,
+            "-v error -select_streams s -show_entries stream=codec_name " +
+            "-of csv=p=0 \"" + filePath + "\"")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+            UseShellExecute = false,
+            CreateNoWindow  = true,
+        };
+
+        try
+        {
+            using var proc = Process.Start(psi)!;
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+            var output     = await proc.StandardOutput.ReadToEndAsync();
+            await stderrTask;
+            await proc.WaitForExitAsync();
+
+            return output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                         .Select(l => l.Trim().TrimEnd(','))
+                         .Where(l => l.Length > 0)
+                         .ToList();
+        }
+        catch { return Array.Empty<string>(); }
+    }
+
     // ── Broken edit-list detection ───────────────────────────────────────────
 
     /// <summary>

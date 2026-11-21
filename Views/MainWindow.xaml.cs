@@ -152,15 +152,25 @@ public partial class MainWindow : Window
 
     private void FileList_DragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(typeof(VideoFile))
-            ? DragDropEffects.Move
-            : DragDropEffects.None;
+        // The list covers most of the window once files are queued, so it must
+        // accept new files from Explorer as well as internal reordering.
+        e.Effects = e.Data.GetDataPresent(typeof(VideoFile))     ? DragDropEffects.Move
+                  : e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy
+                  : DragDropEffects.None;
         e.Handled = true;
     }
 
     private void FileList_Drop(object sender, DragEventArgs e)
     {
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
+        {
+            VM.AddFilesCommand.Execute(files);
+            e.Handled = true;   // stop the window's Drop handler adding them again
+            return;
+        }
+
         if (!e.Data.GetDataPresent(typeof(VideoFile))) return;
+        e.Handled = true;
 
         var dragged = (VideoFile)e.Data.GetData(typeof(VideoFile));
         var fromIdx = VM.Files.IndexOf(dragged);
